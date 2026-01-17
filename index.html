@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ポーカー通信対戦 (完全版)</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+
+
+    <style>
+        body { font-family: sans-serif; background: #2c3e50; color: white; text-align: center; margin: 0; padding: 10px; user-select: none; }
+        .screen { display: none; }
+        .screen.active { display: block; }
+        
+        /* ロビー */
+        #lobby-screen { max-width: 400px; margin: 30px auto; background: #34495e; padding: 20px; border-radius: 10px; }
+        input, select { width: 100%; padding: 10px; font-size: 1.1rem; margin-bottom: 15px; box-sizing: border-box; border-radius: 5px; border: none;}
+        label { display: block; text-align: left; margin-bottom: 5px; font-weight: bold; }
+
+        /* ゲームボード */
+        #game-board { max-width: 600px; margin: 0 auto; background: #27ae60; border: 8px solid #5d4037; border-radius: 15px; padding: 10px; min-height: 550px; position: relative;}
+        
+        .player-area { background: rgba(0,0,0,0.3); padding: 10px; margin: 5px 0; border-radius: 8px; transition: 0.3s; }
+        .player-area.active { box-shadow: 0 0 15px 5px #f1c40f; background: rgba(255,255,255,0.1); }
+        .player-area.winner { border: 2px solid gold; background: rgba(255,215,0,0.3); }
+
+        .hand { display: flex; justify-content: center; gap: 5px; height: 95px; }
+        .card { width: 55px; height: 80px; background: white; color: black; border-radius: 5px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 1.4rem; border: 1px solid #999; position: relative; transition: transform 0.1s; }
+        .card.red { color: #e74c3c; }
+        .card.back { background: repeating-linear-gradient(45deg, #c0392b, #c0392b 5px, #a93226 5px, #a93226 10px); color: transparent; }
+        
+        /* 選択時の挙動 */
+        .card.selected { transform: translateY(-15px); background: #fff9c4; border-color: orange; box-shadow: 0 5px 10px rgba(0,0,0,0.5); }
+
+        button { width: 100%; padding: 12px; font-size: 1.1rem; border-radius: 5px; border: none; cursor: pointer; margin-top: 5px; font-weight: bold; color: white; }
+        .btn-blue { background: #2980b9; }
+        .btn-green { background: #27ae60; }
+        .btn-orange { background: #e67e22; }
+        
+        #msg-area { min-height: 1.5em; font-weight: bold; margin: 10px 0; text-shadow: 1px 1px 2px black; font-size: 1.1rem; }
+        .controls { display: none; }
+        
+        /* ルーレット演出 */
+        #roulette-overlay { position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:100; display:none; flex-direction:column; justify-content:center; align-items:center; border-radius: 10px;}
+        .roulette-text { font-size: 2rem; color: #f1c40f; font-weight: bold; animation: blink 0.5s infinite; }
+        @keyframes blink { 0% {opacity:1;} 50% {opacity:0.5;} 100% {opacity:1;} }
+    </style>
+</head>
+<body>
+
+    <div id="lobby-screen" class="screen active">
+        <h1>ポーカー通信対戦</h1>
+        
+        <label>合言葉</label>
+        <input type="text" id="room-id" placeholder="例: 1234">
+        
+        <label>名前</label>
+        <input type="text" id="my-name" placeholder="あなたの名前">
+
+        <div id="host-settings">
+            <label>対戦回数 (親のみ設定可)</label>
+            <select id="game-count-select">
+                <option value="1">1回勝負</option>
+                <option value="3">3回勝負</option>
+                <option value="5">5回勝負</option>
+            </select>
+        </div>
+
+        <div style="margin-top:20px; display:flex; gap:10px;">
+            <button class="btn-blue" onclick="createRoom()">親として作成</button>
+            <button class="btn-green" onclick="joinRoom()">子として参加</button>
+        </div>
+    </div>
+
+    <div id="waiting-screen" class="screen">
+        <h2>対戦相手を待っています...</h2>
+        <p>相手が「子として参加」すると自動で始まります</p>
+    </div>
+
+    <div id="game-screen" class="screen">
+        <div id="game-board">
+            <div id="roulette-overlay">
+                <div class="roulette-text">順番を抽選中...</div>
+            </div>
+
+            <div class="player-area" id="p-opponent">
+                <div><span id="opp-name">相手</span> <span id="opp-score" style="background:red; padding:2px 5px; border-radius:4px;">0pt</span></div>
+                <div class="hand" id="opp-hand"></div>
+                <div id="opp-status" style="font-size:0.8rem;">待機中</div>
+            </div>
+
+            <div style="margin: 15px 0; background:rgba(0,0,0,0.4); padding:10px; border-radius:10px;">
+                <div id="game-info" style="color:#ecf0f1; font-size:0.9rem;">Game 1</div>
+                <div id="msg-area">準備中...</div>
+                
+                <div id="my-controls" class="controls">
+                    <button class="btn-orange" onclick="doExchange()">交換する</button>
+                    <button class="btn-green" style="background:#7f8c8d" onclick="doPass()">パス</button>
+                </div>
+                <div id="next-btn-area" class="controls">
+                    <button class="btn-blue" onclick="nextGame()">次のゲームへ</button>
+                </div>
+                <div id="final-btn-area" class="controls">
+                    <button class="btn-orange" onclick="location.reload()">タイトルに戻る</button>
+                </div>
+            </div>
+
+            <div class="player-area" id="p-me">
+                <div><span id="my-name-disp">自分</span> <span id="my-score" style="background:red; padding:2px 5px; border-radius:4px;">0pt</span></div>
+                <div class="hand" id="my-hand"></div>
+                <div id="my-status" style="font-size:0.8rem;">待機中</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // =========================================================
+        // ★★★ Firebase設定 (必ず書き換えてください) ★★★
+        // =========================================================
+        const firebaseConfig = {
+        apiKey: "AIzaSyD4mZkCuEp4mFHqcCnYxVZ-If1YVvZxJAQ",
+        authDomain: "poker-game-e46da.firebaseapp.com",
+        projectId: "poker-game-e46da",
+        databaseURL: "https://poker-game-e46da-default-rtdb.firebaseio.com/",
+        storageBucket: "poker-game-e46da.firebasestorage.app",
+        messagingSenderId: "728862440233",
+        appId: "1:728862440233:web:b94eee4126aba5d74f5538",
+                };
+        // =========================================================
+
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+        firebase.auth().signInAnonymously().catch((error) => {
+        console.error("ログインエラー:", error);
+        });
+
+        // ※ログイン状態が変わったか監視するリスナー（念のため）
+        firebase.auth().onAuthStateChanged((user) => {
+        if (user) {
+        console.log("ログイン成功: ", user.uid);
+                }
+        });
+        let roomId = "";
+        let myRole = ""; 
+        let myPlayerIndex = 0; 
+        let myName = "";
+        let currentGameState = null;
+        let selectedIndices = []; // 選択中のカードのインデックス
+
+        const SUITS = ['♠', '♥', '♦', '♣'];
+        const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+        // --- ロビー ---
+
+        function createRoom() {
+            initConnection("host");
+        }
+        function joinRoom() {
+            initConnection("guest");
+        }
+
+        function initConnection(role) {
+            roomId = document.getElementById("room-id").value.trim();
+            myName = document.getElementById("my-name").value.trim() || (role==="host"?"Host":"Guest");
+            if(!roomId) return alert("合言葉を入力してください");
+
+            myRole = role;
+            myPlayerIndex = (role === "host") ? 0 : 1;
+            let maxGames = parseInt(document.getElementById("game-count-select").value);
+
+            document.getElementById("lobby-screen").classList.remove("active");
+            document.getElementById("waiting-screen").classList.add("active");
+
+            const roomRef = db.ref("rooms/" + roomId);
+
+            if (role === "host") {
+                roomRef.set({
+                    status: "waiting",
+                    maxGames: maxGames, // ゲーム回数保存
+                    players: {
+                        0: { name: myName, score: 0, hand: [], connected: true },
+                        1: { name: "待機中...", score: 0, hand: [], connected: false }
+                    },
+                    gameCount: 1,
+                    roundCount: 1,
+                    phase: "setup"
+                });
+                
+                roomRef.child("players/1/connected").on("value", (snap) => {
+                    if(snap.val() === true) startRoulettePhase(); // 揃ったらルーレットへ
+                });
+            } else {
+                roomRef.child("players/1").update({
+                    name: myName,
+                    connected: true,
+                    score: 0
+                });
+            }
+
+            roomRef.on("value", (snapshot) => {
+                const val = snapshot.val();
+                if(val) {
+                    currentGameState = val;
+                    renderGame();
+                }
+            });
+        }
+
+        // --- ホスト用ロジック ---
+
+        function startRoulettePhase() {
+    // ルーレットフェーズを開始
+    // ★修正: playersの情報は上書きせず、状態だけ更新する
+    db.ref("rooms/" + roomId).update({
+        status: "playing",
+        phase: "roulette"
+    });
+
+    // 3秒後に実際にゲーム開始（先行を決める）
+    setTimeout(() => {
+        startGameLogic();
+    }, 3000);
+}
+
+
+        function startGameLogic() {
+            let deck = createDeck();
+            shuffleDeck(deck);
+            let p0hand = [], p1hand = [];
+            for(let i=0; i<5; i++) { p0hand.push(deck.pop()); p1hand.push(deck.pop()); }
+
+            // ランダムで先行を決める (0 or 1)
+            let starter = Math.floor(Math.random() * 2);
+
+            // DB更新 (ルーレット終了 -> ゲーム開始)
+            db.ref("rooms/" + roomId).update({
+                deck: deck,
+                turnIndex: starter, 
+                roundCount: 1,
+                phase: "playing",
+                "players/0/hand": p0hand,
+                "players/0/status": (starter===0 ? "思考中..." : "待機中"),
+                "players/1/hand": p1hand,
+                "players/1/status": (starter===1 ? "思考中..." : "待機中")
+            });
+        }
+
+        function nextGame() {
+            if(myRole !== "host") return; // ホストのみ実行可
+            
+            // 次のゲームへ行くか、終了か
+            if (currentGameState.gameCount >= currentGameState.maxGames) {
+                // 全試合終了
+                showFinalResult();
+            } else {
+                // 次のゲームへ
+                let nextCount = currentGameState.gameCount + 1;
+                db.ref("rooms/" + roomId).update({
+                    gameCount: nextCount,
+                    phase: "setup"
+                });
+                startRoulettePhase(); // またルーレットから
+            }
+        }
+        
+        function showFinalResult() {
+            // 最終結果画面へ
+            let p0 = currentGameState.players[0];
+            let p1 = currentGameState.players[1];
+            let winner = "引き分け";
+            if(p0.score > p1.score) winner = p0.name + "の優勝！";
+            if(p1.score > p0.score) winner = p1.name + "の優勝！";
+
+            db.ref("rooms/" + roomId).update({
+                phase: "final",
+                resultMsg: `全${currentGameState.maxGames}戦終了！ ${winner}`
+            });
+        }
+
+        // --- 画面描画 ---
+
+        function renderGame() {
+            const state = currentGameState;
+            if(!state || state.status === "waiting") return;
+
+            document.getElementById("waiting-screen").classList.remove("active");
+            document.getElementById("game-screen").classList.add("active");
+
+            // ルーレット表示制御
+            if (state.phase === "roulette") {
+                document.getElementById("roulette-overlay").style.display = "flex";
+            } else {
+                document.getElementById("roulette-overlay").style.display = "none";
+            }
+
+            const me = state.players[myPlayerIndex];
+            const oppIndex = (myPlayerIndex + 1) % 2;
+            const opp = state.players[oppIndex];
+
+            // 情報表示
+            document.getElementById("my-name-disp").innerText = me.name;
+            document.getElementById("my-score").innerText = me.score + "pt";
+            document.getElementById("my-status").innerText = me.status;
+            
+            document.getElementById("opp-name").innerText = opp.name;
+            document.getElementById("opp-score").innerText = opp.score + "pt";
+            document.getElementById("opp-status").innerText = opp.status;
+            document.getElementById("game-info").innerText = `Game ${state.gameCount} / ${state.maxGames} (Round ${state.roundCount})`;
+
+            // 手札描画
+            renderHand("my-hand", me.hand, true);
+            let showOpponent = (state.phase === "result" || state.phase === "final");
+            renderHand("opp-hand", opp.hand, showOpponent);
+
+            // UI状態制御
+            document.getElementById("p-me").classList.remove("active", "winner");
+            document.getElementById("p-opponent").classList.remove("active", "winner");
+            document.getElementById("my-controls").style.display = "none";
+            document.getElementById("next-btn-area").style.display = "none";
+            document.getElementById("final-btn-area").style.display = "none";
+
+            if (state.phase === "playing") {
+                if(state.turnIndex === myPlayerIndex) {
+                    document.getElementById("p-me").classList.add("active");
+                    document.getElementById("msg-area").innerText = "あなたの番です。";
+                    document.getElementById("my-controls").style.display = "block";
+                } else {
+                    document.getElementById("p-opponent").classList.add("active");
+                    document.getElementById("msg-area").innerText = `${opp.name} の番です...`;
+                }
+            } 
+            else if (state.phase === "result") {
+                document.getElementById("msg-area").innerText = state.resultMsg;
+                // ホストにのみ「次へ」ボタンを表示（同期ズレ防止のためホスト管理）
+                if (myRole === "host") {
+                    document.getElementById("next-btn-area").style.display = "block";
+                } else {
+                    document.getElementById("msg-area").innerText += " (親が次のゲームへ進むのを待っています)";
+                }
+                
+                if(state.winner === myPlayerIndex) document.getElementById("p-me").classList.add("winner");
+                if(state.winner === oppIndex) document.getElementById("p-opponent").classList.add("winner");
+            }
+            else if (state.phase === "final") {
+                 document.getElementById("msg-area").innerText = state.resultMsg;
+                 document.getElementById("final-btn-area").style.display = "block";
+                 // スコアが高い方を光らせる
+                 if(me.score > opp.score) document.getElementById("p-me").classList.add("winner");
+                 if(opp.score > me.score) document.getElementById("p-opponent").classList.add("winner");
+            }
+        }
+
+        function renderHand(elementId, handData, isFaceUp) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = "";
+            if(!handData) return;
+
+            handData.forEach((c, idx) => {
+                const div = document.createElement("div");
+                div.className = "card";
+                
+                if(isFaceUp) {
+                    div.innerHTML = `<div>${c.suit}</div><div>${c.rank}</div>`;
+                    if(c.suit === '♥' || c.suit === '♦') div.classList.add("red");
+                    
+                    if(elementId === "my-hand" && selectedIndices.includes(idx)) {
+                        div.classList.add("selected");
+                    }
+                    
+                    if(elementId === "my-hand" && currentGameState.phase === "playing" && currentGameState.turnIndex === myPlayerIndex) {
+                        div.onclick = () => toggleSelect(idx);
+                        div.style.cursor = "pointer";
+                    }
+                } else {
+                    div.classList.add("back");
+                }
+                el.appendChild(div);
+            });
+        }
+
+        function toggleSelect(idx) {
+            const pos = selectedIndices.indexOf(idx);
+            if(pos === -1) selectedIndices.push(idx);
+            else selectedIndices.splice(pos, 1);
+            renderGame(); 
+        }
+
+        // --- アクション ---
+
+        function doExchange() {
+            if(selectedIndices.length === 0) return alert("カードを選んでください");
+            processAction(selectedIndices);
+        }
+        function doPass() {
+            processAction([]);
+        }
+
+        function processAction(indices) {
+            db.ref("rooms/" + roomId).once("value").then(snap => {
+                let s = snap.val();
+                let me = s.players[myPlayerIndex];
+                let deck = s.deck || [];
+
+                // ★修正点: 位置を保持したまま交換
+                // spliceを使わず、直接インデックスを指定して上書きする
+                indices.forEach(idx => {
+                    if (deck.length > 0) {
+                        me.hand[idx] = deck.pop(); // その場所のカードを新しいものに入れ替え
+                    }
+                });
+
+                // 更新データ準備
+                let updates = {};
+                updates["deck"] = deck;
+                updates[`players/${myPlayerIndex}/hand`] = me.hand;
+                updates[`players/${myPlayerIndex}/status`] = (indices.length>0 ? indices.length+"枚交換" : "パス");
+                
+                // ★修正点: 選択状態を即座にクリア
+                selectedIndices = [];
+                renderGame(); // ローカル描画を即時更新して選択解除を見せる
+
+                // ターン・ラウンド管理
+                let nextTurn = (s.turnIndex + 1) % 2;
+                let nextPhase = "playing";
+                let nextRound = s.roundCount;
+
+                // 現在のプレイヤーが「後攻の人」だったらラウンドが進む
+                // ターン順序(turnIndex)ではなく、先行後攻の概念が必要だが、
+                // 簡易的に「ターンが移るときにラウンド終了チェック」を行う
+                // ここでは「2人が1回ずつ動いたら1ラウンド」とするため、
+                // turnCountのようなカウンターを持つのが正確だが、
+                // 簡易実装として「Statusが両方埋まったら」などを判定基準にする
+                // 今回はシンプルに: 
+                // Host(0) -> Guest(1) -> RoundUp -> Host(0)... の順で回す場合
+                // startPlayerがランダムなので、 `(currentTurn + 1) % 2` だけで回し、
+                // 誰かが2回行動したら終わり...という管理は複雑。
+                
+                // シンプルなロジック:
+                // DBに `actionsCount` を持たせるのが確実
+                let actions = (s.actionsCount || 0) + 1;
+                updates["actionsCount"] = actions;
+
+                // 2人とも行動したらラウンド終了
+                if (actions % 2 === 0) {
+                    nextRound++;
+                }
+
+                if (nextRound > 2) {
+                    nextPhase = "calc_result";
+                }
+
+                updates["turnIndex"] = nextTurn;
+                updates["roundCount"] = nextRound;
+                
+                if (nextPhase === "calc_result") {
+                    let r = calcResult(s.players[0].hand, s.players[1].hand);
+                    updates["phase"] = "result";
+                    updates["resultMsg"] = `勝者: ${r.winnerName} (${r.handName})`;
+                    updates["winner"] = r.winnerId;
+                    updates[`players/0/score`] = s.players[0].score + (r.winnerId===0 ? r.points : 0);
+                    updates[`players/1/score`] = s.players[1].score + (r.winnerId===1 ? r.points : 0);
+                    updates[`players/${myPlayerIndex}/status`] = "結果表示";
+                    updates["actionsCount"] = 0; // リセット
+                }
+
+                db.ref("rooms/" + roomId).update(updates);
+            });
+        }
+
+        // --- 共通 ---
+
+        function createDeck() {
+            let d = [];
+            for(let s=0; s<4; s++) for(let r=0; r<13; r++) d.push({suit:SUITS[s], rank:RANKS[r], value:r+2});
+            return d;
+        }
+        function shuffleDeck(d) {
+            for(let i=d.length-1; i>0; i--) { const j = Math.floor(Math.random()*(i+1)); [d[i], d[j]] = [d[j], d[i]]; }
+        }
+
+        // 役判定 (重み付けあり)
+        function calcResult(hand0, hand1) {
+            let r0 = getHandRank(hand0);
+            let r1 = getHandRank(hand1);
+            let winnerId = -1;
+            if (r0.totalScore > r1.totalScore) winnerId = 0;
+            else if (r1.totalScore > r0.totalScore) winnerId = 1;
+            
+            let wName = (winnerId === 0) ? currentGameState.players[0].name : currentGameState.players[1].name;
+            if(winnerId === -1) wName = "引き分け";
+            let wHandName = (winnerId === 0) ? r0.name : r1.name;
+            let pts = (winnerId === 0) ? r0.pointValue : r1.pointValue;
+            return { winnerId, winnerName: wName, handName: wHandName, points: pts };
+        }
+
+        function getHandRank(hand) {
+            if(!hand) return { totalScore: 0, name: "", pointValue: 0 };
+            let counts = {};
+            hand.forEach(c => counts[c.value] = (counts[c.value] || 0) + 1);
+            let breakdown = Object.entries(counts).map(([val, count]) => ({ val: parseInt(val), count }));
+            breakdown.sort((a, b) => (b.count - a.count) || (b.val - a.val));
+
+            let sortedVals = hand.map(c => c.value).sort((a,b)=>a-b);
+            let suits = hand.map(c => c.suit);
+            let isFlush = suits.every(s=>s===suits[0]);
+            let isStraight = true;
+            for(let i=0; i<4; i++){
+                if(sortedVals[i+1] !== sortedVals[i]+1) {
+                    if(i===3 && sortedVals[3]===5 && sortedVals[4]===14) {} else { isStraight=false; break; }
+                }
+            }
+            let isRoyal = isStraight && isFlush && sortedVals[4] === 14 && sortedVals[0] === 10;
+
+            let name="High Card", point=0, score=0;
+            if(isRoyal) { name="Royal Flush"; point=9; score=9e9; }
+            else if(isStraight && isFlush) { name="Straight Flush"; point=8; score=8e9; }
+            else if(breakdown[0].count===4) { name="4 Card"; point=7; score=7e9; }
+            else if(breakdown[0].count===3 && breakdown[1].count===2) { name="Full House"; point=6; score=6e9; }
+            else if(isFlush) { name="Flush"; point=5; score=5e9; }
+            else if(isStraight) { name="Straight"; point=4; score=4e9; }
+            else if(breakdown[0].count===3) { name="3 Card"; point=3; score=3e9; }
+            else if(breakdown[0].count===2 && breakdown[1].count===2) { name="2 Pair"; point=2; score=2e9; }
+            else if(breakdown[0].count===2) { name="1 Pair"; point=1; score=1e9; }
+            
+            let tie = 0;
+            if(breakdown[0]) tie += breakdown[0].val * 1e8;
+            if(breakdown[1]) tie += breakdown[1].val * 1e6;
+            if(breakdown[2]) tie += breakdown[2].val * 1e4;
+            return { name, pointValue: point, totalScore: score + tie };
+        }
+    </script>
+</body>
+</html>
